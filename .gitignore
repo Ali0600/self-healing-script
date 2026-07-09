@@ -1,0 +1,9 @@
+# Personal/host-specific config (commit config.example.json instead)
+config.json
+
+# Runtime state — never committed
+logs/
+work/
+state/
+*.log
+.DS_Store

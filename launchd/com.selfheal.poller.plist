@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Self-heal poller: every 30 min, check the configured repos for open
+  `scrape-failure` issues and run at most one headless heal.
+
+  Template — install.sh replaces CHANGE_ME with the real home directory and
+  copies this to ~/Library/LaunchAgents/.
+
+  StartInterval (not StartCalendarInterval): monotonic, DST-immune, and after
+  sleep the next opportunity fires — a stateless poller loses nothing.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.selfheal.poller</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/CHANGE_ME/self-healing-script/bin/poll.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/Users/CHANGE_ME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGE_ME/self-healing-script/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGE_ME/self-healing-script/logs/launchd.err.log</string>
+</dict>
+</plist>

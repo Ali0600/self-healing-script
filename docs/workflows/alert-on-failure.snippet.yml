@@ -1,0 +1,39 @@
+# Paste into the target repo's scheduled-scrape workflow, after the scrape
+# steps. Requires `issues: write` in the workflow's `permissions:` block.
+#
+# On failure it opens ONE issue labeled `scrape-failure` (or comments on the
+# already-open one, so repeated failures don't spam). The local self-heal
+# poller consumes exactly this signal.
+#
+# The label must exist in the repo — `install.sh` in self-healing-script
+# creates it for every configured repo.
+
+      - name: Alert on failure
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The scheduled scrape failed on ${new Date().toISOString()}.\n\nRun: ${run}`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'scrape-failure',
+            });
+            if (open.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: open[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Scheduled scrape failed',
+                body,
+                labels: ['scrape-failure'],
+              });
+            }

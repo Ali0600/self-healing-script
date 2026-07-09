@@ -1,0 +1,34 @@
+# Paste into the target repo's scheduled-scrape workflow, after the scrape
+# steps. Requires `issues: write` in the workflow's `permissions:` block.
+#
+# Completes the state machine: a healthy scrape closes any open
+# `scrape-failure` issue, so outages that resolve themselves (site was down,
+# transient block) end the healing loop with zero code changes — and a merged
+# fix is confirmed closed by the next green run even if the PR's `Fixes #n`
+# linkage was edited away.
+
+      - name: Close recovery issues
+        if: success()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'scrape-failure',
+            });
+            for (const issue of open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Scheduled scrape succeeded on ${new Date().toISOString()} — auto-closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
