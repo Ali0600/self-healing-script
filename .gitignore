@@ -7,3 +7,6 @@ work/
 state/
 *.log
 .DS_Store
+
+# Claude Code session artifacts
+.claude/
