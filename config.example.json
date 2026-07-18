@@ -60,7 +60,8 @@
       ],
       "download_artifacts": false,
       "max_attempts": 2,
-      "cooldown_hours": 12
+      "cooldown_hours": 12,
+      "commit_prefix": "fix(scrape)"
     },
     {
       "name": "clothing-sales-tracker",
@@ -107,7 +108,8 @@
       "artifact_pattern": "scrape-failure-*",
       "max_attempts": 3,
       "cooldown_hours": 4,
-      "claude_timeout_minutes": 35
+      "claude_timeout_minutes": 35,
+      "commit_prefix": "fix(scrape)"
     },
     {
       "name": "preflight-landing",
@@ -156,7 +158,8 @@
       "download_artifacts": false,
       "max_attempts": 3,
       "cooldown_hours": 4,
-      "claude_timeout_minutes": 20
+      "claude_timeout_minutes": 20,
+      "commit_prefix": "fix"
     }
   ]
 }

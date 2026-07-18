@@ -507,7 +507,7 @@ def publish_fix(repo: Dict[str, Any], issue: Dict[str, Any], clone: Path, attemp
     steps = [
         ["git", "checkout", "-B", branch],
         ["git", "add", "--"] + candidates,
-        ["git", "commit", "-m", f"fix(scrape): {summary}",
+        ["git", "commit", "-m", f"{repo.get('commit_prefix', 'fix')}: {summary}",
          "-m", f"Automated self-heal for the failed scheduled scrape.\n\nFixes #{number}"],
         ["git", "push", "-u", "origin", branch, "--force-with-lease"],
     ]
@@ -518,7 +518,7 @@ def publish_fix(repo: Dict[str, Any], issue: Dict[str, Any], clone: Path, attemp
 
     pr_body = (
         f"Automated fix from the [self-healing pipeline]"
-        f"(https://github.com/Ali0600/self-healing-script) — review the extraction diff "
+        f"(https://github.com/Ali0600/self-healing-script) — review the diff "
         f"before merging.\n\n"
         f"### Heal report\n\n{heal_report or '(agent wrote no report)'}\n\n"
         f"### Independent verification (orchestrator re-run)\n\n```\n{verify_output}\n```\n\n"
@@ -767,9 +767,10 @@ def cmd_status() -> int:
     cfg = load_config()
     for repo in cfg["repos"]:
         print(f"\n{repo['slug']}:")
+        label = repo.get("failure_label", "scrape-failure")
         issues = open_failure_issues(repo)
         if not issues:
-            print("  no open scrape-failure issues")
+            print(f"  no open {label} issues")
             continue
         for issue in issues:
             elig = check_eligibility(repo, issue, force=False, announce=False)

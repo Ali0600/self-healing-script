@@ -2,9 +2,10 @@
 
 A scheduled scrape failed in this repo's CI. You are working in a dedicated
 clone of `{{SLUG}}` at the latest `{{DEFAULT_BRANCH}}`. Your job: diagnose the
-failure from the evidence below, fix the broken **extraction logic** (that may
-mean DOM selectors, JSON key paths, regexes, endpoint URLs — whatever this repo
-uses), and prove the fix with the verify script.
+failure from the evidence below, fix what actually broke (a DOM selector, a
+JSON key path, a regex, an endpoint URL, a type error, a half-finished
+refactor — whatever this repo's failure turns out to be), and prove the fix
+with the verify script.
 
 ## About this repo
 
