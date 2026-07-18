@@ -1,30 +1,36 @@
 # self-healing-script
 
-When a scheduled web scrape breaks in CI — a site changed its markup, moved a
-JSON key, renamed a CSS class — this pipeline notices, runs a **headless Claude
-Code session on my Mac** to fix the extraction logic, proves the fix against
-the live site, and opens a pull request. I review and merge; the issue closes
-itself.
+When a repo's CI breaks in a way nobody is watching — a scraped site changed
+its markup, a half-finished refactor stopped the build — this pipeline
+notices, runs a **headless Claude Code session on my Mac** to fix it, proves
+the fix by running the real thing, and opens a pull request. I review and
+merge; the issue closes itself.
 
 ```
  target repo (GitHub Actions)                     this Mac (launchd, every 30 min)
 ┌──────────────────────────────┐                 ┌────────────────────────────────────┐
-│ scheduled scrape fails        │                 │ poller finds the issue             │
+│ scheduled job fails           │                 │ poller finds the issue             │
 │   └─ opens issue              │   gh (poll)     │   └─ dedicated clone, fresh reset  │
-│      label: scrape-failure ───┼────────────────▶│      └─ headless `claude -p`       │
-│                               │                 │         fixes extraction, iterates │
-│ next green scrape             │                 │         against verify script      │
+│      label: <failure_label> ──┼────────────────▶│      └─ headless `claude -p`       │
+│                               │                 │         fixes the break, iterates  │
+│ next green run                │                 │         against verify script      │
 │   └─ auto-closes the issue ◀──┼──┐              │      └─ orchestrator re-verifies   │
 └──────────────────────────────┘  │              │         INDEPENDENTLY, then pushes │
                                    │  PR: Fixes #n│         branch + opens PR ─────────┼──▶ human review
                                    └──────────────┴────────────────────────────────────┘
 ```
 
-Currently healing: [grocery-helper](https://github.com/Ali0600/grocery-helper)
-(JSON-endpoint scrapers) and
-[clothing-sales-tracker](https://github.com/Ali0600/clothing-sales-tracker)
-(Playwright DOM scraping) — one config file, zero scraper-specific code in the
-orchestrator.
+Currently healing:
+
+| repo | what breaks | failure label |
+|---|---|---|
+| [grocery-helper](https://github.com/Ali0600/grocery-helper) | JSON-endpoint scrapers | `scrape-failure` |
+| [clothing-sales-tracker](https://github.com/Ali0600/clothing-sales-tracker) | Playwright DOM scraping | `scrape-failure` |
+| [preflight-landing](https://github.com/Ali0600/preflight-landing) | Next.js lint + build | `build-failure` |
+
+One config file, zero repo-specific code in the orchestrator — the landing
+page was onboarded without touching `selfheal.py` at all, which is what
+"generic" was supposed to mean.
 
 ## Why local, not CI?
 

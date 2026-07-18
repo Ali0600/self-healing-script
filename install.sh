@@ -33,10 +33,16 @@ echo "→ creating labels in configured repos (idempotent)"
 import json, subprocess, sys
 
 cfg = json.load(open(sys.argv[1]))
+defaults = cfg.get("defaults", {})
 for repo in cfg["repos"]:
-    slug = repo["slug"]
+    merged = {**defaults, **repo}
+    slug = merged["slug"]
+    # Each repo names its own failure label (scrapers use scrape-failure, the
+    # landing page uses build-failure) — create what THIS repo is configured to
+    # poll, not a hardcoded one, or the alert step and the poller disagree.
     for name, color, desc in (
-        ("scrape-failure", "d73a4a", "opened by CI when the scheduled scrape fails"),
+        (merged.get("failure_label", "scrape-failure"), "d73a4a",
+         "opened by CI when the scheduled job fails"),
         ("self-heal", "1d76db", "PR opened by the local self-healing pipeline"),
     ):
         proc = subprocess.run(

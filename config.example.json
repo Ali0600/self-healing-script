@@ -18,13 +18,15 @@
       "default_branch": "main",
       "workflow_file": "scrape.yml",
       "purpose": "German grocery-deal aggregator (FastAPI backend). A weekly cron POSTs /api/reset on the deployed backend, which re-scrapes Lidl Plus coupons and meinprospekt/Bonial weekly flyers via their JSON endpoints (httpx). Extraction is JSON-shape parsing (dict keys, a __NEXT_DATA__ regex), NOT DOM selectors.",
-      "repo_notes": "IMPORTANT: the failing cron exercises the DEPLOYED backend, not this machine — its datacenter IP may see different regional content than this Mac (a real past incident). If the local scrape yields real (non-sample) data while prod fails, do NOT guess-fix: report CANNOT_REPRODUCE with your analysis. The scrapers fall back to hardcoded sample data per source on failure; the failure signature is a store name suffix ' (sample)' and NULL offers.raw_payload.",
+      "repo_notes": "IMPORTANT: the failing cron exercises the DEPLOYED backend, not this machine \u2014 its datacenter IP may see different regional content than this Mac (a real past incident). If the local scrape yields real (non-sample) data while prod fails, do NOT guess-fix: report CANNOT_REPRODUCE with your analysis. The scrapers fall back to hardcoded sample data per source on failure; the failure signature is a store name suffix ' (sample)' and NULL offers.raw_payload.",
       "setup_cmds": [
         "[ -x backend/.venv/bin/python ] || /opt/homebrew/bin/python3.12 -m venv backend/.venv",
         "backend/.venv/bin/pip install -q -r backend/requirements.txt"
       ],
       "verify_script": "verify/grocery-helper.sh",
-      "verify_env": { "SCRAPE_PLZ": "10115" },
+      "verify_env": {
+        "SCRAPE_PLZ": "10115"
+      },
       "success_criteria": "the local scrape writes >0 offers to backend/grocery.db with zero stores named '% (sample)' and zero offers with NULL raw_payload (the verify script asserts all three and prints the counts)",
       "heal_hint_paths": [
         "backend/app/scrapers/lidl.py",
@@ -32,17 +34,29 @@
         "backend/app/scrapers/base.py",
         "backend/app/scrapers/run.py"
       ],
-      "allowed_change_globs": ["backend/app/scrapers/*", "backend/tests/*"],
-      "ignore_globs": ["backend/grocery.db", "backend/.venv/*"],
+      "allowed_change_globs": [
+        "backend/app/scrapers/*",
+        "backend/tests/*"
+      ],
+      "ignore_globs": [
+        "backend/grocery.db",
+        "backend/.venv/*"
+      ],
       "allowed_tools": [
-        "Read", "Glob", "Grep", "Edit", "Write",
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
         "Bash(bash .selfheal/verify.sh)",
         "Bash(cd backend:*)",
         "Bash(backend/.venv/bin/python:*)",
         "Bash(python3:*)",
         "Bash(curl:*)",
         "Bash(sqlite3:*)",
-        "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)"
       ],
       "download_artifacts": false,
       "max_attempts": 2,
@@ -54,7 +68,7 @@
       "default_branch": "main",
       "workflow_file": "scrape.yml",
       "purpose": "pnpm monorepo tracking Uniqlo DE sale items with headless Playwright Chromium. A 6-hourly cron runs the scrapers in GitHub Actions and commits data/*.json snapshots to main (Actions-as-backend). Scrapers live in packages/scrapers/src/, one file per retailer.",
-      "repo_notes": "Failures raise a staged ScrapeError (stage: navigate | wait-for-tiles | scroll-paginate | extract) with expectedCount/actualCount and a ~4KB htmlSnippet, uploaded as a CI artifact — read it first. Brittle points: TILE_SELECTOR and COUNT_SELECTOR at the top of packages/scrapers/src/uniqlo.ts, and the in-page extraction fallback chain. The site hydrates on scroll, so tile counts below ~95% of the header count are treated as pagination failure.",
+      "repo_notes": "Failures raise a staged ScrapeError (stage: navigate | wait-for-tiles | scroll-paginate | extract) with expectedCount/actualCount and a ~4KB htmlSnippet, uploaded as a CI artifact \u2014 read it first. Brittle points: TILE_SELECTOR and COUNT_SELECTOR at the top of packages/scrapers/src/uniqlo.ts, and the in-page extraction fallback chain. The site hydrates on scroll, so tile counts below ~95% of the header count are treated as pagination failure.",
       "setup_cmds": [
         "pnpm install --prefer-offline",
         "pnpm --filter @cst/scrapers exec playwright install chromium"
@@ -67,21 +81,82 @@
         "packages/scrapers/src/error.ts",
         "packages/scrapers/src/index.ts"
       ],
-      "allowed_change_globs": ["packages/scrapers/src/*"],
-      "ignore_globs": ["data/*", ".scrape-artifacts/*", "node_modules/*"],
+      "allowed_change_globs": [
+        "packages/scrapers/src/*"
+      ],
+      "ignore_globs": [
+        "data/*",
+        ".scrape-artifacts/*",
+        "node_modules/*"
+      ],
       "allowed_tools": [
-        "Read", "Glob", "Grep", "Edit", "Write",
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
         "Bash(bash .selfheal/verify.sh)",
         "Bash(pnpm:*)",
         "Bash(node:*)",
         "Bash(curl:*)",
-        "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)"
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)"
       ],
       "download_artifacts": true,
       "artifact_pattern": "scrape-failure-*",
       "max_attempts": 3,
       "cooldown_hours": 4,
       "claude_timeout_minutes": 35
+    },
+    {
+      "name": "preflight-landing",
+      "slug": "YOUR_GH_USER/preflight-landing",
+      "default_branch": "main",
+      "workflow_file": "build.yml",
+      "failure_label": "build-failure",
+      "purpose": "Single-page Next.js 16 + Tailwind marketing site for the Preflight dependency tool. Static App Router page (app/page.tsx) composed of section components under components/, prerendered to HTML at build time. No backend and no test suite \u2014 the lint + build IS the gate.",
+      "repo_notes": "NOT a scraper: failures here are compile/lint/type errors introduced by a commit, and the CI log names the offending file and line \u2014 start there rather than hunting. Nothing is deployed from this repo, so a break is invisible until someone opens the site, which is why the build check exists. Prefer fixing the component that changed over adding dependencies, loosening tsconfig, or disabling lint rules \u2014 a suppressed error is not a fix and will be rejected.",
+      "setup_cmds": [
+        "npm ci --prefer-offline --no-audit --no-fund"
+      ],
+      "verify_script": "verify/preflight-landing.sh",
+      "verify_env": {},
+      "success_criteria": "npm run lint passes, npm run build succeeds, and .next/server/app/index.html is a substantive prerendered page (>20KB, containing a <main> element and the Preflight brand string) \u2014 the verify script asserts all of this and prints the byte count",
+      "heal_hint_paths": [
+        "app/page.tsx",
+        "app/layout.tsx",
+        "components/",
+        "lib/config.ts"
+      ],
+      "allowed_change_globs": [
+        "app/*",
+        "components/*",
+        "lib/*"
+      ],
+      "ignore_globs": [
+        ".next/*",
+        "node_modules/*",
+        "*.tsbuildinfo"
+      ],
+      "allowed_tools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Edit",
+        "Write",
+        "Bash(bash .selfheal/verify.sh)",
+        "Bash(npm run:*)",
+        "Bash(npx tsc:*)",
+        "Bash(node:*)",
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)"
+      ],
+      "download_artifacts": false,
+      "max_attempts": 3,
+      "cooldown_hours": 4,
+      "claude_timeout_minutes": 20
     }
   ]
 }

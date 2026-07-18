@@ -1,7 +1,9 @@
 # Onboarding a repo
 
-Adding a scraping repo to the self-healing pipeline takes three pieces — no
-changes to the orchestrator itself.
+Adding a repo to the self-healing pipeline takes three pieces — no changes to
+the orchestrator itself. It does not have to be a scraper: anything whose
+breakage a CI job can detect and a script can verify works the same way (the
+Preflight landing page is onboarded on its lint + build).
 
 ## 1. Make the repo announce failures (one PR)
 
@@ -37,6 +39,7 @@ Copy an entry in `config.example.json` and fill in:
 | key | what it does |
 |---|---|
 | `slug`, `default_branch`, `workflow_file` | where to poll issues + fetch failed-run logs |
+| `failure_label` | the label this repo's alert step applies (`scrape-failure` by default, e.g. `build-failure` for a site). `install.sh` creates whichever label is configured — keep it identical in the workflow snippet and here, or the alert and the poller talk past each other |
 | `purpose`, `repo_notes` | injected into the heal prompt — say what the scraper does and every known gotcha (fallback behavior, env-specific failures) |
 | `setup_cmds` | make a fresh clone runnable (venv/pnpm install); cached between heals |
 | `verify_script`, `verify_env`, `success_criteria` | the gate (see above) |
