@@ -8,6 +8,7 @@ on 2026-08-15 — a live expired-OAuth failure and a healthy success — so thes
 fixtures pin the actual contract, not a guess at it.
 """
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -86,6 +87,62 @@ class ParseProbeTest(unittest.TestCase):
         self.assertTrue(selfheal.auth_is_expired(
             "Failed to authenticate: OAuth session expired and could not be refreshed"))
 
+
+
+class AgentEnvTest(unittest.TestCase):
+    """The env builder shared by the auth probe AND every heal session.
+
+    Both call sites use this one function on purpose — if they built env separately,
+    the probe could prove an auth that heals don't actually use.
+    """
+
+    def setUp(self):
+        self._saved = dict(os.environ)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved)
+
+    def test_stored_token_is_injected(self):
+        env = selfheal.agent_env(token="sk-ant-oat-TESTVALUE")
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat-TESTVALUE")
+
+    def test_no_token_means_variable_absent(self):
+        """Without a stored token the CLI must fall back to its own keychain session."""
+        env = selfheal.agent_env(token=None)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+
+    def test_inherited_token_never_survives_untouched(self):
+        """A token from THIS session must not leak into the healer's child process."""
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "inherited-from-parent"
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", selfheal.agent_env(token=None))
+        self.assertEqual(
+            selfheal.agent_env(token="stored")["CLAUDE_CODE_OAUTH_TOKEN"], "stored")
+
+    def test_inherited_api_key_is_always_stripped(self):
+        """An API key outranks subscription auth and would bill per token — never inherit."""
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-api-should-not-leak"
+        for token in (None, "sk-ant-oat-TESTVALUE"):
+            self.assertNotIn("ANTHROPIC_API_KEY", selfheal.agent_env(token=token))
+
+    def test_unrelated_env_is_preserved(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        self.assertEqual(selfheal.agent_env(token=None)["PATH"], "/usr/bin:/bin")
+
+
+class AuthAdviceTest(unittest.TestCase):
+    def test_advice_differs_by_credential_and_names_the_right_command(self):
+        with_token = selfheal.auth_expired_advice("sk-ant-oat-x", "OAuth session expired")
+        self.assertIn("setup-token", with_token)
+        self.assertIn("set-token", with_token)
+
+        without = selfheal.auth_expired_advice(None, "OAuth session expired")
+        self.assertIn("re-login", without)
+        self.assertNotEqual(with_token, without)
+
+    def test_labels_name_the_active_source(self):
+        self.assertIn("token", selfheal.auth_source_label("sk-ant-oat-x"))
+        self.assertIn("interactive", selfheal.auth_source_label(None))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

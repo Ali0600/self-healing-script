@@ -123,6 +123,26 @@ launchctl kickstart -k gui/$(id -u)/com.selfheal.poller   # force a tick
 `config.json` is gitignored: postal codes, machine paths, and tuning stay off
 GitHub (`config.example.json` carries neutral placeholders).
 
+### Auth for unattended use
+
+Claude Code's interactive login (`/login`) **expires by design every few weeks**
+— fine when you're at the keyboard, fatal for a daemon: the healer just stops,
+and the first sign is a paused pipeline. So it authenticates with a long-lived
+token instead:
+
+```bash
+claude setup-token                     # browser flow, ~1 year, subscription (no API billing)
+python3 bin/selfheal.py set-token      # paste it; stored in the login Keychain, never a file
+```
+
+The token is injected as `CLAUDE_CODE_OAUTH_TOKEN` into every `claude` call the
+healer makes — probe and heal sessions share one env builder, so they can never
+authenticate differently. It outranks the interactive login in the CLI's auth
+precedence, so your day-to-day session can expire without touching the pipeline.
+Rotate it the same way when it eventually ages out; the failure message names the
+exact command. Without a stored token the healer falls back to whatever
+interactive session exists, which is the setup that broke twice in five weeks.
+
 ## Operations
 
 ```bash

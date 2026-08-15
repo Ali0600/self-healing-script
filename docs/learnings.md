@@ -2,6 +2,42 @@
 
 Teachable concepts that came up while building this project.
 
+## An interactive login is not an automation credential
+
+One-line explanation: OAuth sessions created by an interactive login carry a
+deliberately short life and a refresh chain that assumes a human is around;
+platforms that support automation ship a *separate* long-lived credential for
+it.
+
+**Why it came up:** the healer authenticated with whatever `claude /login` had
+left in the keychain, and that session died twice in five weeks — each time
+pausing the pipeline until a human noticed. The docs say it plainly: logins
+warn "expires in 3 days", and unattended work "stops making progress once the
+credential expires". `claude setup-token` issues a ~1-year token consumed via
+`CLAUDE_CODE_OAUTH_TOKEN`, which outranks the interactive credential.
+
+**Takeaway:** if a daemon authenticates by borrowing your personal session,
+its uptime is capped by your session's lifetime — look for the platform's
+purpose-built machine credential, store it where the daemon can read it (the
+OS keyring, not a dotfile), and make the expiry message name the rotation
+command.
+
+## Injecting a credential proves itself by *changing* the error
+
+One-line explanation: when you wire up a new auth path, a still-failing run is
+not necessarily a failed wiring — the *identity* of the error tells you whether
+your credential was even read.
+
+**Why it came up:** docs didn't explicitly confirm `CLAUDE_CODE_OAUTH_TOKEN`
+works in `-p` mode. Storing a deliberately bogus token changed the failure from
+"OAuth session expired and could not be refreshed" to "401 OAuth access token
+is invalid" — a message only reachable if the token was consumed. That single
+observation proved the injection worked, before a real token existed.
+
+**Takeaway:** to prove a credential path is live without a valid credential,
+feed it an invalid one and check the error changes in a way only that path can
+produce — same shape as proving a gate works by feeding it known-bad input.
+
 ## A subprocess's exit code answers a different question than its output
 
 One-line explanation: `claude -p` exits non-zero for anything that went wrong

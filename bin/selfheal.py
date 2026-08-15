@@ -16,6 +16,7 @@ Subcommands:
     heal --repo NAME         heal now (optionally --issue N, --force)
     doctor [--fast]          preflight: auth, config, clones, verify harness
     status                   show open issues / attempts / pending PRs
+    set-token [--clear]      store the long-lived `claude setup-token` credential
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import argparse
 import datetime as dt
 import fcntl
 import fnmatch
+import getpass
 import json
 import logging
 import os
@@ -56,6 +58,14 @@ FAILURE_RENOTIFY_H = 12
 # SessionEnd hook exceeding its 1.5s budget — writes to the probe's stderr and taints the
 # healer's read of whether AUTH works.
 PROBE_SETTINGS = '{"disableAllHooks": true}'
+
+# Where the long-lived `claude setup-token` credential lives. The login Keychain, not a
+# dotfile: a token in a file is a token in a backup, a screen-share, and a `cat`.
+TOKEN_KEYCHAIN_SERVICE = "selfheal-claude-token"
+TOKEN_KEYCHAIN_ACCOUNT = "selfheal"
+
+# Distinguishes "caller said no token" from "caller said nothing" in agent_env().
+_UNSET = "\x00unset"
 
 MARKER_RE = re.compile(r"<!--\s*self-heal\s+(\{.*?\})\s*-->", re.S)
 VERDICT_RE = re.compile(r"^VERDICT:\s*(FIXED|CANNOT_REPRODUCE|SITE_DOWN|GAVE_UP)\s*$", re.M)
@@ -451,13 +461,44 @@ def render_prompt(repo: Dict[str, Any], issue: Dict[str, Any], ctx: Dict[str, st
     return template
 
 
-def agent_env() -> Dict[str, str]:
-    """Clean env: subscription keychain OAuth, never an inherited API key,
-    and no nested-session vars leaking in when run manually from a Claude session."""
+def stored_oauth_token() -> Optional[str]:
+    """The long-lived `claude setup-token` credential, read from the login Keychain.
+
+    Absent is a normal state (the healer falls back to whatever interactive session
+    exists), so a miss is quiet. The value is never logged or echoed.
+    """
+    proc = subprocess.run(
+        ["security", "find-generic-password", "-s", TOKEN_KEYCHAIN_SERVICE,
+         "-a", TOKEN_KEYCHAIN_ACCOUNT, "-w"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def agent_env(token: Optional[str] = _UNSET) -> Dict[str, str]:
+    """Environment for every `claude` invocation — probe and heal sessions alike.
+
+    Strips inherited ANTHROPIC_*/CLAUDE* vars so a nested session's context (or a
+    stray API key, which outranks subscription auth and would bill per token) can
+    never leak in, then injects the long-lived OAuth token when one is stored.
+
+    That token outranks the interactive `/login` credential in the CLI's auth
+    precedence, which is the point: interactive logins expire by design every few
+    weeks, and an unattended healer must not depend on one being alive.
+
+    `token` is a parameter so tests can exercise this purely; the default reads the
+    Keychain. Pass None explicitly to force the no-token path.
+    """
+    if token is _UNSET:
+        token = stored_oauth_token()
     env = dict(os.environ)
     for key in list(env):
         if key.startswith(("ANTHROPIC_", "CLAUDE")):
             env.pop(key)
+    if token:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
 
 
@@ -741,25 +782,41 @@ def auth_is_expired(message: str) -> bool:
     return "oauth" in lowered or "authenticate" in lowered or "log in" in lowered
 
 
+def auth_source_label(token: Optional[str]) -> str:
+    return "stored long-lived token" if token else "interactive keychain session"
+
+
+def auth_expired_advice(token: Optional[str], message: str) -> str:
+    """What the user should actually DO, which differs by which credential died."""
+    if token:
+        fix = ("the stored long-lived token was rejected — it may have hit its ~1 year "
+               "expiry or been revoked. Regenerate with `claude setup-token`, then "
+               "`python3 bin/selfheal.py set-token`")
+    else:
+        fix = ("Claude login expired — run `claude` once in a terminal to re-login. "
+               "Interactive logins expire every few weeks by design; for unattended use "
+               "run `claude setup-token` and store it with "
+               "`python3 bin/selfheal.py set-token` (~1 year, survives login expiry)")
+    return f"{fix}; healing is paused until then. (probe said: {message})"
+
+
 def preflight(cfg: Dict[str, Any]) -> None:
     proc = gh(["auth", "status"])
     if proc.returncode != 0:
         raise RuntimeError(f"gh auth failed: {tail(proc.stderr, 5)}")
     if claude_auth_stale():
-        log.info("proving claude auth non-interactively (marker missing or older than %sh)…",
-                 CLAUDE_AUTH_TTL_H)
+        token = stored_oauth_token()
+        log.info("proving claude auth non-interactively via %s (marker missing or older "
+                 "than %sh)…", auth_source_label(token), CLAUDE_AUTH_TTL_H)
         proc = subprocess.run(
             [claude_bin(cfg), "-p", "Reply with exactly: OK", "--output-format", "json",
              "--model", "haiku", "--settings", PROBE_SETTINGS],
-            capture_output=True, text=True, timeout=120, env=agent_env(),
+            capture_output=True, text=True, timeout=120, env=agent_env(token),
         )
         ok, message = parse_probe(proc.stdout, proc.stderr, proc.returncode)
         if not ok:
             if auth_is_expired(message):
-                raise RuntimeError(
-                    f"Claude login expired — run `claude` once in a terminal to re-login; "
-                    f"healing is paused until then. (probe said: {message})"
-                )
+                raise RuntimeError(auth_expired_advice(token, message))
             raise RuntimeError(f"claude auth probe failed: {message}")
         if proc.returncode != 0:
             # The turn itself succeeded, so auth is fine; something peripheral exited
@@ -805,6 +862,63 @@ def announce_failure(error: str) -> None:
         )
     except OSError as exc:
         log.warning("could not record failure state: %s", exc)
+
+
+def cmd_set_token(clear: bool) -> int:
+    """Store (or remove) the long-lived `claude setup-token` credential in the Keychain."""
+    if clear:
+        proc = subprocess.run(
+            ["security", "delete-generic-password", "-s", TOKEN_KEYCHAIN_SERVICE,
+             "-a", TOKEN_KEYCHAIN_ACCOUNT],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            print("Removed. The healer will fall back to the interactive keychain session.")
+        else:
+            print("No stored token to remove.")
+        return 0
+
+    print("Generate one with:  claude setup-token")
+    print("Paste it below (input is hidden, never echoed or stored in shell history).")
+    try:
+        token = getpass.getpass("Token: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted — nothing stored.")
+        return 1
+    if not token:
+        print("Empty input — nothing stored.")
+        return 1
+    if " " in token or "\n" in token:
+        print("That value contains whitespace — paste the token only.")
+        return 1
+    if not token.startswith("sk-ant-oat"):
+        # Warn, don't refuse: the prefix is an observed convention, not a contract, and
+        # refusing on it would block a valid token if the format ever changes. The probe
+        # below is the real check.
+        print("Note: that doesn't look like a `claude setup-token` value "
+              "(expected an sk-ant-oat… prefix) — storing it anyway.")
+
+    proc = subprocess.run(
+        ["security", "add-generic-password", "-U", "-s", TOKEN_KEYCHAIN_SERVICE,
+         "-a", TOKEN_KEYCHAIN_ACCOUNT, "-w", token,
+         "-D", "selfheal long-lived Claude token",
+         "-j", "Used by ~/self-healing-script to authenticate headless claude -p runs"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        print(f"Keychain write failed: {proc.stderr.strip()[:200]}")
+        return 1
+
+    if stored_oauth_token() != token:
+        print("Stored, but reading it back gave a different value — check Keychain Access.")
+        return 1
+
+    # A stored credential is not a working one; force the next tick to re-prove it.
+    CLAUDE_AUTH_MARKER.unlink(missing_ok=True)
+    LAST_FAILURE_PATH.unlink(missing_ok=True)
+    print("Stored in the login Keychain. The healer will now authenticate with this token,")
+    print("independent of your interactive login. Verify with:  python3 bin/selfheal.py poll")
+    return 0
 
 
 def cmd_poll(force: bool = False) -> int:
@@ -886,12 +1000,13 @@ def cmd_doctor(fast: bool) -> int:
         return 1
 
     check("gh auth", gh(["auth", "status"]).returncode == 0)
+    source = auth_source_label(stored_oauth_token())
     try:
         CLAUDE_AUTH_MARKER.unlink(missing_ok=True)  # force a fresh auth proof
         preflight(cfg)
-        check("claude non-interactive auth (keychain)", True)
+        check(f"claude non-interactive auth ({source})", True)
     except (RuntimeError, subprocess.TimeoutExpired) as exc:
-        check("claude non-interactive auth (keychain)", False, str(exc)[:200])
+        check(f"claude non-interactive auth ({source})", False, str(exc)[:200])
 
     for repo in cfg["repos"]:
         name = repo["name"]
@@ -956,6 +1071,10 @@ def main() -> int:
     doctor_parser.add_argument("--fast", action="store_true",
                                help="skip setup_cmds + live verify runs")
     sub.add_parser("status", help="show open issues / attempts / PRs")
+    token_parser = sub.add_parser(
+        "set-token", help="store the long-lived `claude setup-token` credential")
+    token_parser.add_argument("--clear", action="store_true",
+                              help="remove the stored token instead")
     args = parser.parse_args()
 
     setup_logging()
@@ -963,6 +1082,8 @@ def main() -> int:
         return cmd_poll()
     if args.command == "heal":
         return cmd_heal(args.repo, args.issue, args.force)
+    if args.command == "set-token":
+        return cmd_set_token(args.clear)
     if args.command == "doctor":
         return cmd_doctor(args.fast)
     return cmd_status()
