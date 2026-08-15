@@ -2,6 +2,38 @@
 
 Teachable concepts that came up while building this project.
 
+## A subprocess's exit code answers a different question than its output
+
+One-line explanation: `claude -p` exits non-zero for anything that went wrong
+in the run — including a user hook that got cancelled — while the *outcome of
+the turn* lives in the JSON envelope's `is_error` / `result`.
+
+**Why it came up:** the poller's auth probe judged `returncode` and quoted
+`stderr`, so when the OAuth session expired the log blamed an unrelated
+dashboard SessionEnd hook (whose 1.5s budget the probe's short session blew).
+Three hours of ticks pointed at an innocent file. The fix reads the envelope;
+a non-zero exit with a successful envelope now logs a warning instead of
+failing the healer, and the probe runs with `--settings '{"disableAllHooks":
+true}'` so unrelated hooks can't taint the measurement.
+
+**Takeaway:** when a tool reports both a status code and structured output,
+decide which one *answers your question* and assert on that — the other is a
+proxy that will eventually disagree with it.
+
+## A repeated alert is a silenced alert
+
+One-line explanation: an unattended job that notifies on every failed tick
+sends the same message dozens of times a day, training the user to ignore it.
+
+**Why it came up:** the expired login failed every 30 min; without backoff
+that's 48 identical macOS notifications daily. Now the failure is *logged*
+every tick but *announced* only when its signature changes or 12h pass, and
+the record is deleted on any healthy tick so the next incident is immediate.
+
+**Takeaway:** separate the log (every occurrence, for debugging) from the
+alert (state changes, for humans) — and key the alert on a signature so a
+genuinely new failure still interrupts immediately.
+
 ## Claude Code headless mode (`claude -p`) as an automation primitive
 
 One-line explanation: `claude -p "<prompt>"` runs a full agentic Claude Code

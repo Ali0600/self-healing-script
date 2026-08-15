@@ -44,6 +44,18 @@ WORK_DIR = ROOT / "work"
 STATE_DIR = ROOT / "state"
 LOCK_PATH = STATE_DIR / "poller.lock"
 CLAUDE_AUTH_MARKER = STATE_DIR / "claude-auth-ok"
+LAST_FAILURE_PATH = STATE_DIR / "last-failure.json"
+
+# A tick that fails the same way every 30 min must not notify every 30 min — a block the
+# user has read twice is a block they start skipping. Re-announce an unchanged failure at
+# most this often; a CHANGED failure always notifies immediately.
+FAILURE_RENOTIFY_H = 12
+
+# The auth probe runs with the user's hooks disabled (`disableAllHooks`, a documented
+# settings key overridable per-invocation). Otherwise an unrelated user hook — e.g. a
+# SessionEnd hook exceeding its 1.5s budget — writes to the probe's stderr and taints the
+# healer's read of whether AUTH works.
+PROBE_SETTINGS = '{"disableAllHooks": true}'
 
 MARKER_RE = re.compile(r"<!--\s*self-heal\s+(\{.*?\})\s*-->", re.S)
 VERDICT_RE = re.compile(r"^VERDICT:\s*(FIXED|CANNOT_REPRODUCE|SITE_DOWN|GAVE_UP)\s*$", re.M)
@@ -702,6 +714,33 @@ def heal_issue(repo: Dict[str, Any], cfg: Dict[str, Any], issue: Dict[str, Any],
 # ------------------------------------------------------------- entrypoints
 
 
+def parse_probe(stdout: str, stderr: str, returncode: int) -> Tuple[bool, str]:
+    """Judge the auth probe by its JSON envelope. Returns (ok, message).
+
+    The process exit code is NOT the verdict: `claude -p` also exits non-zero when
+    something peripheral to the turn fails (a user hook cancelled, a plugin sync), and
+    the real outcome — including "OAuth session expired" — is reported inside the
+    envelope's `result`. Reading the exit code and quoting stderr made this healer blame
+    an innocent SessionEnd hook for an expired login, so judge the outcome, not the proxy.
+    """
+    try:
+        envelope = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        detail = tail(stderr or "", 5).strip() or "(no output)"
+        return False, f"probe produced no JSON envelope (exit {returncode}): {detail}"
+
+    result = str(envelope.get("result") or "").strip()
+    if envelope.get("is_error"):
+        return False, result or f"probe reported an error (exit {returncode})"
+    return True, result
+
+
+def auth_is_expired(message: str) -> bool:
+    """Is this probe failure specifically a dead login (fixable only by the user)?"""
+    lowered = message.lower()
+    return "oauth" in lowered or "authenticate" in lowered or "log in" in lowered
+
+
 def preflight(cfg: Dict[str, Any]) -> None:
     proc = gh(["auth", "status"])
     if proc.returncode != 0:
@@ -711,17 +750,61 @@ def preflight(cfg: Dict[str, Any]) -> None:
                  CLAUDE_AUTH_TTL_H)
         proc = subprocess.run(
             [claude_bin(cfg), "-p", "Reply with exactly: OK", "--output-format", "json",
-             "--model", "haiku"],
+             "--model", "haiku", "--settings", PROBE_SETTINGS],
             capture_output=True, text=True, timeout=120, env=agent_env(),
         )
+        ok, message = parse_probe(proc.stdout, proc.stderr, proc.returncode)
+        if not ok:
+            if auth_is_expired(message):
+                raise RuntimeError(
+                    f"Claude login expired — run `claude` once in a terminal to re-login; "
+                    f"healing is paused until then. (probe said: {message})"
+                )
+            raise RuntimeError(f"claude auth probe failed: {message}")
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"claude non-interactive auth failed under this environment: "
-                f"{tail(proc.stderr, 5)}"
-            )
+            # The turn itself succeeded, so auth is fine; something peripheral exited
+            # non-zero. Record it (never swallow), but don't fail the healer over it.
+            log.warning("auth probe succeeded but exited %s: %s",
+                        proc.returncode, tail(proc.stderr, 3).strip() or "(no stderr)")
         CLAUDE_AUTH_MARKER.parent.mkdir(exist_ok=True)
         CLAUDE_AUTH_MARKER.write_text(now_utc().isoformat(), encoding="utf-8")
         log.info("claude auth OK — marker refreshed")
+
+
+def announce_failure(error: str) -> None:
+    """Log every failed tick; notify only when the failure is NEW or has gone stale.
+
+    A poller that fails identically every 30 minutes would otherwise fire 48 identical
+    notifications a day, which trains the user to ignore the one that matters.
+    """
+    signature = error.strip().splitlines()[0][:200] if error.strip() else "unknown failure"
+    previous: Dict[str, Any] = {}
+    try:
+        previous = json.loads(LAST_FAILURE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    should_notify = True
+    if previous.get("signature") == signature:
+        try:
+            age = now_utc() - parse_iso(previous["ts"])
+            should_notify = age >= dt.timedelta(hours=FAILURE_RENOTIFY_H)
+        except (KeyError, ValueError):
+            should_notify = True
+
+    if not should_notify:
+        log.info("same failure as last tick — notification suppressed (re-notify after %sh)",
+                 FAILURE_RENOTIFY_H)
+        return
+
+    notify(signature if auth_is_expired(signature) else f"selfheal poll failed: {signature}")
+    try:
+        STATE_DIR.mkdir(exist_ok=True)
+        LAST_FAILURE_PATH.write_text(
+            json.dumps({"signature": signature, "ts": now_utc().isoformat()}), encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning("could not record failure state: %s", exc)
 
 
 def cmd_poll(force: bool = False) -> int:
@@ -747,12 +830,14 @@ def cmd_poll(force: bool = False) -> int:
                     log.info("%s#%s: skip — %s", repo["name"], issue["number"], elig.reason)
                     continue
                 heal_issue(repo, cfg, issue, elig.attempts + 1)
+                LAST_FAILURE_PATH.unlink(missing_ok=True)  # healthy tick: next fault is news
                 return 0  # at most one heal per tick
         log.info("tick complete — nothing to heal")
+        LAST_FAILURE_PATH.unlink(missing_ok=True)
         return 0
     except Exception as exc:  # noqa: BLE001 — top-level: announce, never die silently
         log.exception("poll tick failed")
-        notify(f"selfheal poll failed: {exc}"[:180])
+        announce_failure(str(exc))
         return 1
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
