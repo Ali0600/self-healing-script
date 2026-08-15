@@ -2,6 +2,7 @@
   "defaults": {
     "failure_label": "scrape-failure",
     "max_attempts": 3,
+    "max_blocked_runs": 6,
     "cooldown_hours": 6,
     "model": "sonnet",
     "claude_bin": "~/.local/bin/claude",

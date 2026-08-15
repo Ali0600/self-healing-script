@@ -64,6 +64,30 @@ FAILURE_HINTS = {
     "PUSH_FAILED": "pushing the fix branch or opening the PR failed",
 }
 
+# Verdicts meaning the healer never got to EVALUATE the target repo at all — its own
+# machinery broke before or during the session (dependencies, GitHub context, or the agent
+# process itself). They say nothing about whether the repo is fixable, so they must not spend
+# the repo's attempt budget.
+#
+# 2026-08-09 is why this exists: two AGENT_ERROR runs (an expired OAuth session) exhausted
+# grocery-helper's 2-attempt budget and posted "a human needs to look at this one" — about a
+# repo whose bug had already been fixed hours earlier. The healer reported on work it never
+# did. TIMEOUT is deliberately NOT in this set: it did start work, it just ran out of clock.
+NEVER_EVALUATED = frozenset({"AGENT_ERROR", "SETUP_FAILED", "CONTEXT_FAILED"})
+
+# Markers that record a DECISION about the issue rather than an attempt on it.
+BOOKKEEPING = frozenset({"EXHAUSTED", "HEALER_BLOCKED"})
+
+# How long a proven `claude -p` auth is trusted before it must be re-proven.
+#
+# This check used to be one-shot — the marker was written on the first successful run and its
+# mere EXISTENCE was the whole test, so the preflight built to catch a dead credential went
+# blind the moment it first passed. When the session expired weeks later the marker was still
+# sitting there, the poller sailed past it, and the failure surfaced as two wasted heal
+# attempts instead of one loud "auth is dead". A cached positive that outlives the thing it
+# attests is worse than no cache: it reports health it never re-measured.
+CLAUDE_AUTH_TTL_H = 12
+
 log = logging.getLogger("selfheal")
 
 
@@ -89,6 +113,19 @@ def now_utc() -> dt.datetime:
 def parse_iso(ts: str) -> dt.datetime:
     # gh emits e.g. 2026-07-09T04:12:45Z; py3.9 fromisoformat can't parse "Z".
     return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def claude_auth_stale() -> bool:
+    """True when the proven-auth marker is missing, unreadable, or past its TTL.
+
+    Fails toward re-proving: an unparseable marker costs one cheap haiku call, while trusting
+    it costs a wasted heal cycle and a misleading comment on someone else's repo.
+    """
+    try:
+        proven = parse_iso(CLAUDE_AUTH_MARKER.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+    return now_utc() - proven >= dt.timedelta(hours=CLAUDE_AUTH_TTL_H)
 
 
 def notify(message: str, title: str = "Self-heal") -> None:
@@ -226,8 +263,17 @@ def check_eligibility(repo: Dict[str, Any], issue: Dict[str, Any], force: bool,
                       announce: bool = True) -> Eligibility:
     """announce=False for read-only callers (status) — never posts comments."""
     markers = parse_markers(issue)
-    attempts = len([m for m in markers if m.get("verdict") != "EXHAUSTED"])
+    # An attempt is a run that actually LOOKED at the repo. A run whose own machinery broke
+    # (see NEVER_EVALUATED) produced no evidence about fixability, so counting it would retire
+    # the budget without ever having tried — and then blame the target repo for it.
+    attempts = len([m for m in markers
+                    if m.get("verdict") not in BOOKKEEPING | NEVER_EVALUATED])
+    blocked = len([m for m in markers if m.get("verdict") in NEVER_EVALUATED])
     max_attempts = int(repo.get("max_attempts", 3))
+    # Not counting them cannot mean retrying forever: a persistently broken healer would poll
+    # this issue every tick until someone noticed. Its own, looser budget stops the thrash and
+    # — crucially — escalates with a different sentence, naming the healer instead of the repo.
+    max_blocked = int(repo.get("max_blocked_runs", 2 * max_attempts))
     number = issue["number"]
 
     pr_url = heal_pr_open(repo, number)
@@ -246,6 +292,20 @@ def check_eligibility(repo: Dict[str, Any], issue: Dict[str, Any], force: bool,
             )
             notify(f"{repo['name']}: self-heal exhausted after {attempts} attempts — needs you")
         return Eligibility(False, f"attempts exhausted ({attempts}/{max_attempts})", attempts)
+
+    if blocked >= max_blocked:
+        if announce and not any(m.get("verdict") == "HEALER_BLOCKED" for m in markers):
+            post_issue_comment(
+                repo, number,
+                f"🩺 Self-heal could not RUN {blocked} time(s) — its own auth or setup is "
+                f"broken, so this issue has never actually been evaluated. Nothing here "
+                f"points at {repo['name']}; check the healer.\n\n"
+                f"{marker_blob(attempts, 'HEALER_BLOCKED')}",
+            )
+            notify(f"healer blocked ({blocked} runs) — check its auth/setup, not {repo['name']}")
+        return Eligibility(
+            False, f"healer blocked ({blocked}/{max_blocked}) — check its auth/setup", attempts,
+        )
 
     stamps = [parse_iso(m["ts"]) for m in markers if m.get("ts")]
     if stamps:
@@ -605,6 +665,21 @@ def heal_issue(repo: Dict[str, Any], cfg: Dict[str, Any], issue: Dict[str, Any],
             f"{marker_blob(attempt, verdict, pr_url)}"
         )
         notify(f"{repo['name']}: fix PR ready — {pr_url}")
+    elif verdict in NEVER_EVALUATED:
+        # Not "attempt N finished without a fix" — nothing was attempted. Saying otherwise is
+        # what made the 2026-08-09 comments read as a verdict on the repo.
+        hint = FAILURE_HINTS.get(verdict, "unexpected failure")
+        excerpt = detail.strip()[:2500] or "(no diagnostic output)"
+        comment = (
+            f"🩺 Self-heal **could not run** (`{verdict}`: {hint}).\n\n"
+            f"This is the healer's own machinery, not a finding about this repo, so it does "
+            f"**not** count against the {max_attempts}-attempt budget "
+            f"(still {attempt - 1}/{max_attempts} used). Retrying after a {cooldown}h "
+            f"cooldown.\n\n"
+            f"<details><summary>Diagnostics</summary>\n\n{excerpt}\n\n</details>\n\n"
+            f"{marker_blob(attempt, verdict)}"
+        )
+        notify(f"healer could not run ({verdict}) — check its auth/setup")
     else:
         hint = FAILURE_HINTS.get(verdict, "unexpected failure")
         retry = (
@@ -631,8 +706,9 @@ def preflight(cfg: Dict[str, Any]) -> None:
     proc = gh(["auth", "status"])
     if proc.returncode != 0:
         raise RuntimeError(f"gh auth failed: {tail(proc.stderr, 5)}")
-    if not CLAUDE_AUTH_MARKER.exists():
-        log.info("first run: proving claude keychain auth non-interactively…")
+    if claude_auth_stale():
+        log.info("proving claude auth non-interactively (marker missing or older than %sh)…",
+                 CLAUDE_AUTH_TTL_H)
         proc = subprocess.run(
             [claude_bin(cfg), "-p", "Reply with exactly: OK", "--output-format", "json",
              "--model", "haiku"],
@@ -643,8 +719,9 @@ def preflight(cfg: Dict[str, Any]) -> None:
                 f"claude non-interactive auth failed under this environment: "
                 f"{tail(proc.stderr, 5)}"
             )
+        CLAUDE_AUTH_MARKER.parent.mkdir(exist_ok=True)
         CLAUDE_AUTH_MARKER.write_text(now_utc().isoformat(), encoding="utf-8")
-        log.info("claude auth OK — marker written")
+        log.info("claude auth OK — marker refreshed")
 
 
 def cmd_poll(force: bool = False) -> int:

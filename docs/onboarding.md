@@ -47,7 +47,7 @@ Copy an entry in `config.example.json` and fill in:
 | `allowed_change_globs` | the ONLY paths a fix may touch — anything else is discarded |
 | `ignore_globs` | build/data artifacts the scrape itself produces (never committed) |
 | `allowed_tools` | Claude Code tool allowlist; keep Bash patterns scoped, never include `gh` or `git push` |
-| `max_attempts`, `cooldown_hours`, `claude_timeout_minutes` | pacing + budget |
+| `max_attempts`, `max_blocked_runs`, `cooldown_hours`, `claude_timeout_minutes` | pacing + budget (`max_blocked_runs` covers runs where the healer itself could not start, which do not count as attempts) |
 
 Then run:
 

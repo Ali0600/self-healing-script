@@ -58,6 +58,13 @@ here bought three things:
    budget is spent, or the cooldown hasn't elapsed. State lives in hidden
    `<!-- self-heal {...} -->` marker comments **on the issue itself** — GitHub
    is the durable state machine; the Mac can be wiped without losing history.
+
+   A run whose *own* machinery broke (`AGENT_ERROR`, `SETUP_FAILED`,
+   `CONTEXT_FAILED`) never evaluated the target, so it spends no attempt — it
+   has its own looser `max_blocked_runs` budget and escalates by naming the
+   healer rather than the repo. That distinction is not academic: in August two
+   expired-OAuth runs burned a repo's entire budget and announced that a human
+   was needed, on a repo whose bug had already been fixed.
 3. **Prepare** — dedicated clone under `work/` (never my working checkouts),
    hard-reset to `origin/main`, run the repo's `setup_cmds`.
 4. **Gather evidence** — issue thread, `--log-failed` tail of the failing run,
@@ -122,6 +129,7 @@ GitHub (`config.example.json` carries neutral placeholders).
 python3 bin/selfheal.py status              # open issues, attempts, pending PRs
 python3 bin/selfheal.py heal --repo NAME    # heal now (--force ignores cooldown)
 python3 bin/selfheal.py doctor --fast       # skip the live verify runs
+python3 -m unittest discover -s tests       # eligibility/auth-TTL guards (stdlib only)
 tail -f logs/selfheal.log                   # poller log (rotated)
 ls logs/heal-*.json                         # full agent transcript envelopes
 ./uninstall.sh                              # unload the launchd agent
