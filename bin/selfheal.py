@@ -1075,6 +1075,11 @@ def main() -> int:
         "set-token", help="store the long-lived `claude setup-token` credential")
     token_parser.add_argument("--clear", action="store_true",
                               help="remove the stored token instead")
+    # Deliberately ACCEPT a pasted token here so we can refuse it with an explanation.
+    # argparse's default "unrecognized arguments" error says nothing about the fact that
+    # the value just landed in shell history and in every process list on the machine —
+    # which is the part the user needs to act on.
+    token_parser.add_argument("leaked", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     setup_logging()
@@ -1083,6 +1088,15 @@ def main() -> int:
     if args.command == "heal":
         return cmd_heal(args.repo, args.issue, args.force)
     if args.command == "set-token":
+        if args.leaked:
+            print("That token was passed as a command-line argument, so it is now in your")
+            print("shell history and was visible to every process on this machine via `ps`.")
+            print("It was NOT stored. Treat it as compromised:")
+            print("  1. generate a replacement:  claude setup-token")
+            print("  2. run `python3 bin/selfheal.py set-token` with NO argument and paste")
+            print("     at the hidden prompt")
+            print("  3. remove the exposed line from ~/.zsh_history")
+            return 1
         return cmd_set_token(args.clear)
     if args.command == "doctor":
         return cmd_doctor(args.fast)
